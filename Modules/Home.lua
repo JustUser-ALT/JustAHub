@@ -142,17 +142,10 @@ local hub=_G.JHub; local Win=hub.Win; local CoreGui=hub.CoreGui
 
     local actFly, deactFly = nil, nil
     do
-        local flyDir = Vector3.new()
-        local states = {
-            Enum.HumanoidStateType.Climbing,         Enum.HumanoidStateType.FallingDown,
-            Enum.HumanoidStateType.Flying,           Enum.HumanoidStateType.Freefall,
-            Enum.HumanoidStateType.GettingUp,        Enum.HumanoidStateType.Jumping,
-            Enum.HumanoidStateType.Landed,           Enum.HumanoidStateType.Physics,
-            Enum.HumanoidStateType.PlatformStanding, Enum.HumanoidStateType.Ragdoll,
-            Enum.HumanoidStateType.Running,          Enum.HumanoidStateType.RunningNoPhysics,
-            Enum.HumanoidStateType.Seated,           Enum.HumanoidStateType.StrafingNoPhysics,
-            Enum.HumanoidStateType.Swimming,
-        }
+        -- Mobile+PC fly: uses Humanoid.MoveDirection (joystick on mobile, WASD on PC)
+        -- Up/Down: Space / LeftControl on PC; handled separately via key check
+        local flyConn    = nil
+        local flyUpConn  = nil
 
         function actFly()
             if hub.Flags.FlyEnabled then return end
@@ -161,42 +154,81 @@ local hub=_G.JHub; local Win=hub.Win; local CoreGui=hub.CoreGui
             if not char or not char:FindFirstChild("HumanoidRootPart") then return end
 
             local root = char.HumanoidRootPart
-            local bodyVelocity = Instance.new("BodyVelocity", root)
-            bodyVelocity.Velocity = Vector3.new()
-            bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            local hum  = char:FindFirstChild("Humanoid")
 
-            local inputConn = nil
-            inputConn = hub.UserInput.InputBegan:Connect(function(input, gameProcessed)
-                if gameProcessed then return end
-                if input.KeyCode == Enum.KeyCode.W then flyDir = flyDir + root.CFrame.LookVector end
-                if input.KeyCode == Enum.KeyCode.A then flyDir = flyDir - root.CFrame.RightVector end
-                if input.KeyCode == Enum.KeyCode.S then flyDir = flyDir - root.CFrame.LookVector end
-                if input.KeyCode == Enum.KeyCode.D then flyDir = flyDir + root.CFrame.RightVector end
-                if input.KeyCode == Enum.KeyCode.Space then flyDir = flyDir + Vector3.new(0, 1, 0) end
-                if input.KeyCode == Enum.KeyCode.LeftControl then flyDir = flyDir - Vector3.new(0, 1, 0) end
+            -- Disable physics states so humanoid doesn't fight the BodyVelocity
+            if hum then
+                for _, st in pairs({
+                    Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Freefall,
+                    Enum.HumanoidStateType.GettingUp,   Enum.HumanoidStateType.Jumping,
+                    Enum.HumanoidStateType.Landed,      Enum.HumanoidStateType.Physics,
+                    Enum.HumanoidStateType.Running,     Enum.HumanoidStateType.RunningNoPhysics,
+                }) do
+                    pcall(function() hum:SetStateEnabled(st, false) end)
+                end
+            end
+
+            local bv = Instance.new("BodyVelocity", root)
+            bv.Name     = "_FlyBV"
+            bv.Velocity = Vector3.zero
+            bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+
+            local vertInput = 0  -- +1 up, -1 down, 0 neutral
+            flyUpConn = hub.UserInput.InputBegan:Connect(function(input, gp)
+                if gp then return end
+                if input.KeyCode == Enum.KeyCode.Space        then vertInput =  1 end
+                if input.KeyCode == Enum.KeyCode.LeftControl  then vertInput = -1 end
+            end)
+            hub.UserInput.InputEnded:Connect(function(input)
+                if input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.LeftControl then
+                    vertInput = 0
+                end
             end)
 
-            local heartbeatConn = nil
-            heartbeatConn = hub.RunService.Heartbeat:Connect(function()
+            flyConn = hub.RunService.Heartbeat:Connect(function()
                 if not hub.Flags.FlyEnabled or not root or not root.Parent then
-                    if inputConn then inputConn:Disconnect() end
-                    if heartbeatConn then heartbeatConn:Disconnect() end
-                    if bodyVelocity then bodyVelocity:Destroy() end
+                    if flyConn then flyConn:Disconnect(); flyConn = nil end
+                    if flyUpConn then flyUpConn:Disconnect(); flyUpConn = nil end
+                    pcall(function() bv:Destroy() end)
                     return
                 end
-                flyDir = flyDir.Magnitude > 0 and (flyDir.Unit * hub.FlySpeed) or Vector3.new()
-                bodyVelocity.Velocity = flyDir
+                -- MoveDirection is set by joystick on mobile and WASD on PC
+                -- It's a unit vector in world XZ pointing the direction the player wants to move
+                local moveDir = hum and hum.MoveDirection or Vector3.zero
+                -- Reproject onto camera-relative horizontal plane
+                local cam   = workspace.CurrentCamera
+                local look  = cam and Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z) or Vector3.zero
+                local right = cam and Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z) or Vector3.zero
+                if look.Magnitude > 0 then look = look.Unit end
+                if right.Magnitude > 0 then right = right.Unit end
+
+                local horizontal = (look * moveDir.Z * -1 + right * moveDir.X)
+                local vel = horizontal * hub.FlySpeed + Vector3.new(0, vertInput * hub.FlySpeed * 0.5, 0)
+                bv.Velocity = vel
             end)
         end
 
         function deactFly()
             hub.Flags.FlyEnabled = false
+            if flyConn   then flyConn:Disconnect();   flyConn   = nil end
+            if flyUpConn then flyUpConn:Disconnect(); flyUpConn = nil end
             local char = hub.LocalPlayer.Character
-            if char and char:FindFirstChild("HumanoidRootPart") then
-                local bv = char.HumanoidRootPart:FindFirstChild("BodyVelocity")
-                if bv then bv:Destroy() end
-                for _, st in pairs(states) do
-                    char.Humanoid:SetStateEnabled(st, true)
+            if char then
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if root then
+                    local bv = root:FindFirstChild("_FlyBV")
+                    if bv then bv:Destroy() end
+                end
+                local hum = char:FindFirstChild("Humanoid")
+                if hum then
+                    for _, st in pairs({
+                        Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Freefall,
+                        Enum.HumanoidStateType.GettingUp,   Enum.HumanoidStateType.Jumping,
+                        Enum.HumanoidStateType.Landed,      Enum.HumanoidStateType.Physics,
+                        Enum.HumanoidStateType.Running,     Enum.HumanoidStateType.RunningNoPhysics,
+                    }) do
+                        pcall(function() hum:SetStateEnabled(st, true) end)
+                    end
                 end
             end
         end
