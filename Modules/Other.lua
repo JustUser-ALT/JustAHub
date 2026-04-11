@@ -1,21 +1,25 @@
 local hub=_G.JHub; local Win=hub.Win
     local OtherSideTab = Win:Tab({ Title = "Other", Icon = "zap" })
 
-    -- ── Utilities MultiSection ──────────────────────────────────────
-    local UtilMulti = OtherSideTab:MultiSection({
-        Title     = "Utilities",
-        Desc      = "Bot tools",
-        Icon      = "tool",
+    local FunMulti = OtherSideTab:MultiSection({
+        Title     = "Extras",
+        Desc      = "Fun  •  More coming soon",
+        Icon      = "sparkles",
         Box       = true,
         BoxBorder = true,
         Opened    = true,
     })
 
-    local UtilTab = UtilMulti:Tab({ Title = "Bot", Desc = "Bot utilities", Icon = "cpu", Selected = true })
+    local FunTab = FunMulti:Tab({ Title = "Fun", Desc = "Fun utilities", Icon = "smile", Selected = true })
 
-    UtilTab:Space({})
+    -- ── Bot Utils ──────────────────────────────────────────────────
 
-    -- Delete Bot toggle (keeps dropping on each new spawn)
+    FunTab:Space({})
+
+    FunTab:Section({ Title = "Bot", Desc = "Bot utilities", Icon = "cpu" })
+
+    FunTab:Space({})
+
     local deleteBotEnabled = false
     local deleteBotConn    = nil
 
@@ -31,23 +35,21 @@ local hub=_G.JHub; local Win=hub.Win
         task.delay(5, function() pcall(function() bv:Destroy() end) end)
     end
 
-    UtilTab:Toggle({
+    FunTab:Toggle({
         Title    = "Delete Bot",
-        Desc     = "Deleting Bot — drops through floor, re-applies on respawn",
+        Desc     = "Deleting Bot — drops through floor, watches respawns",
         Value    = false,
         Flag     = "DeleteBot",
         Callback = function(v)
             deleteBotEnabled = v
             if deleteBotConn then deleteBotConn:Disconnect(); deleteBotConn = nil end
             if not v then hub:Notify("Bot", "Delete Bot disabled", "check", 2); return end
-            -- Drop all current bots
             local folder = workspace:FindFirstChild("PiggyNPC")
             if folder then
                 for _, npc in ipairs(folder:GetChildren()) do
                     if npc:IsA("Model") then task.spawn(dropBot, npc) end
                 end
             end
-            -- Watch for new bots spawning
             local function watchFolder(f)
                 deleteBotConn = f.ChildAdded:Connect(function(child)
                     if deleteBotEnabled and child:IsA("Model") then
@@ -65,19 +67,7 @@ local hub=_G.JHub; local Win=hub.Win
         end,
     })
 
-    UtilTab:Space({})
-
-    -- ── Fun MultiSection ─────────────────────────────────────────────
-    local FunMulti = OtherSideTab:MultiSection({
-        Title     = "Extras",
-        Desc      = "Fun  •  More coming soon",
-        Icon      = "sparkles",
-        Box       = true,
-        BoxBorder = true,
-        Opened    = true,
-    })
-
-    local FunTab = FunMulti:Tab({ Title = "Fun", Desc = "Fun utilities", Icon = "smile", Selected = true })
+    FunTab:Space({})
 
     -- ── Target Shooter ────────────────────────────────────────────────
 
@@ -261,12 +251,24 @@ local hub=_G.JHub; local Win=hub.Win
             startFloat(targetRoot)
             task.wait(0.3)
 
-            -- 6) Activate the gun tool (triggers Tool.Activated on client which
-            --    fires the server remote through the gun's own LocalScript)
+            -- 6) Fire via FireRemote using target's current position
             local firedGun = char and char:FindFirstChild("Gun")
             if firedGun then
-                pcall(function() firedGun:Activate() end)
-                hub:Notify("Shoot", "Shot fired at " .. targetName, "check", 3)
+                local fr = firedGun:FindFirstChild("FireRemote")
+                if fr then
+                    local myPos = char.HumanoidRootPart and char.HumanoidRootPart.Position or Vector3.zero
+                    local tPos  = targetRoot.Position
+                    local dir   = (tPos - myPos)
+                    pcall(function()
+                        fr:FireServer(Ray.new(
+                            Vector3.new(myPos.X, myPos.Y, myPos.Z),
+                            Vector3.new(dir.X, dir.Y, dir.Z)
+                        ))
+                    end)
+                    hub:Notify("Shoot", "Shot fired at " .. targetName, "check", 3)
+                else
+                    hub:Notify("Error", "FireRemote not found on Gun", "x", 4)
+                end
             else
                 hub:Notify("Error", "Gun not equipped", "x", 4)
             end
