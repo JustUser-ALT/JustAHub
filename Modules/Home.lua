@@ -58,6 +58,7 @@ local hub=_G.JHub; local Win=hub.Win; local CoreGui=hub.CoreGui
         Flag     = "ActiveFeatures",
         Callback = function(selected)
             enabledFeatures = selected
+            hub._enabledFeatures = selected
         end,
     })
 
@@ -142,95 +143,129 @@ local hub=_G.JHub; local Win=hub.Win; local CoreGui=hub.CoreGui
 
     local actFly, deactFly = nil, nil
     do
-        -- Mobile+PC fly: uses Humanoid.MoveDirection (joystick on mobile, WASD on PC)
-        -- Up/Down: Space / LeftControl on PC; handled separately via key check
-        local flyConn    = nil
-        local flyUpConn  = nil
+        local flyActive  = false
+        local tpWalking  = false
+        local bgInst, bvInst = nil, nil
+
+        local ALL_STATES = {
+            Enum.HumanoidStateType.Climbing,         Enum.HumanoidStateType.FallingDown,
+            Enum.HumanoidStateType.Flying,           Enum.HumanoidStateType.Freefall,
+            Enum.HumanoidStateType.GettingUp,        Enum.HumanoidStateType.Jumping,
+            Enum.HumanoidStateType.Landed,           Enum.HumanoidStateType.Physics,
+            Enum.HumanoidStateType.PlatformStanding, Enum.HumanoidStateType.Ragdoll,
+            Enum.HumanoidStateType.Running,          Enum.HumanoidStateType.RunningNoPhysics,
+            Enum.HumanoidStateType.Seated,           Enum.HumanoidStateType.StrafingNoPhysics,
+            Enum.HumanoidStateType.Swimming,
+        }
+
+        local function cleanup(char)
+            tpWalking = false
+            if bgInst then pcall(function() bgInst:Destroy() end); bgInst = nil end
+            if bvInst then pcall(function() bvInst:Destroy() end); bvInst = nil end
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    hum.PlatformStand = false
+                    for _, st in pairs(ALL_STATES) do pcall(function() hum:SetStateEnabled(st, true) end) end
+                end
+                local anim = char:FindFirstChild("Animate")
+                if anim then anim.Disabled = false end
+            end
+        end
 
         function actFly()
-            if hub.Flags.FlyEnabled then return end
-            hub.Flags.FlyEnabled = true
+            if flyActive then return end
             local char = hub.LocalPlayer.Character
-            if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+            if not char then return end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if not hum then return end
 
-            local root = char.HumanoidRootPart
-            local hum  = char:FindFirstChild("Humanoid")
+            -- Determine rig type
+            local isR6 = hum.RigType == Enum.HumanoidRigType.R6
+            local torso = isR6 and char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+            if not torso then return end
 
-            -- Disable physics states so humanoid doesn't fight the BodyVelocity
-            if hum then
-                for _, st in pairs({
-                    Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Freefall,
-                    Enum.HumanoidStateType.GettingUp,   Enum.HumanoidStateType.Jumping,
-                    Enum.HumanoidStateType.Landed,      Enum.HumanoidStateType.Physics,
-                    Enum.HumanoidStateType.Running,     Enum.HumanoidStateType.RunningNoPhysics,
-                }) do
-                    pcall(function() hum:SetStateEnabled(st, false) end)
+            flyActive = true
+            hub.Flags.FlyEnabled = true
+
+            -- Disable all states + PlatformStand (same as source)
+            for _, st in pairs(ALL_STATES) do pcall(function() hum:SetStateEnabled(st, false) end) end
+            hum:ChangeState(Enum.HumanoidStateType.Swimming)
+            hum.PlatformStand = true
+            char.Animate.Disabled = true
+            for _, track in pairs(hum:GetPlayingAnimationTracks()) do track:AdjustSpeed(0) end
+
+            -- BodyGyro locks rotation
+            bgInst = Instance.new("BodyGyro", torso)
+            bgInst.P = 9e4
+            bgInst.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+            bgInst.CFrame = torso.CFrame
+
+            -- BodyVelocity for physics hover
+            bvInst = Instance.new("BodyVelocity", torso)
+            bvInst.Velocity = Vector3.new(0, 0.1, 0)
+            bvInst.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+
+            local ctrl = {f=0,b=0,l=0,r=0}
+            local lastCtrl = {f=0,b=0,l=0,r=0}
+            local spd = 0
+            local maxSpd = hub.FlySpeed or 50
+
+            -- TranslateBy loop: moves by MoveDirection each heartbeat (works on mobile joystick)
+            tpWalking = true
+            task.spawn(function()
+                local hb = hub.RunService.Heartbeat
+                while tpWalking and hb:Wait() do
+                    local c2 = hub.LocalPlayer.Character
+                    local h2 = c2 and c2:FindFirstChildOfClass("Humanoid")
+                    if not c2 or not h2 or not h2.Parent then break end
+                    if h2.MoveDirection.Magnitude > 0 then
+                        c2:TranslateBy(h2.MoveDirection * (hub.FlySpeed or 50) * 0.1)
+                    end
                 end
-            end
-
-            local bv = Instance.new("BodyVelocity", root)
-            bv.Name     = "_FlyBV"
-            bv.Velocity = Vector3.zero
-            bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-
-            local vertInput = 0  -- +1 up, -1 down, 0 neutral
-            flyUpConn = hub.UserInput.InputBegan:Connect(function(input, gp)
-                if gp then return end
-                if input.KeyCode == Enum.KeyCode.Space        then vertInput =  1 end
-                if input.KeyCode == Enum.KeyCode.LeftControl  then vertInput = -1 end
             end)
-            hub.UserInput.InputEnded:Connect(function(input)
-                if input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.LeftControl then
-                    vertInput = 0
-                end
-            end)
 
-            flyConn = hub.RunService.Heartbeat:Connect(function()
-                if not hub.Flags.FlyEnabled or not root or not root.Parent then
-                    if flyConn then flyConn:Disconnect(); flyConn = nil end
-                    if flyUpConn then flyUpConn:Disconnect(); flyUpConn = nil end
-                    pcall(function() bv:Destroy() end)
-                    return
-                end
-                -- MoveDirection is set by joystick on mobile and WASD on PC
-                -- It's a unit vector in world XZ pointing the direction the player wants to move
-                local moveDir = hum and hum.MoveDirection or Vector3.zero
-                -- Reproject onto camera-relative horizontal plane
-                local cam   = workspace.CurrentCamera
-                local look  = cam and Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z) or Vector3.zero
-                local right = cam and Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z) or Vector3.zero
-                if look.Magnitude > 0 then look = look.Unit end
-                if right.Magnitude > 0 then right = right.Unit end
+            -- Main fly loop: camera-relative velocity + gyro
+            task.spawn(function()
+                while flyActive and torso and torso.Parent do
+                    hub.RunService.RenderStepped:Wait()
 
-                local horizontal = (look * moveDir.Z * -1 + right * moveDir.X)
-                local vel = horizontal * hub.FlySpeed + Vector3.new(0, vertInput * hub.FlySpeed * 0.5, 0)
-                bv.Velocity = vel
+                    local camCF = workspace.CurrentCamera.CFrame
+                    -- Read WASD from MoveDirection for ctrl table (PC)
+                    local md = hum.MoveDirection
+                    if md.Magnitude > 0 then
+                        ctrl.f = -md.Z; ctrl.b = 0; ctrl.l = -md.X; ctrl.r = 0
+                    else
+                        ctrl.f = 0; ctrl.b = 0; ctrl.l = 0; ctrl.r = 0
+                    end
+
+                    if ctrl.l+ctrl.r ~= 0 or ctrl.f+ctrl.b ~= 0 then
+                        spd = math.min(spd + 0.5 + spd/maxSpd, maxSpd)
+                    elseif spd ~= 0 then
+                        spd = math.max(spd - 1, 0)
+                    end
+
+                    if ctrl.l+ctrl.r ~= 0 or ctrl.f+ctrl.b ~= 0 then
+                        bvInst.Velocity = ((camCF.LookVector*(ctrl.f+ctrl.b))
+                            + ((camCF*CFrame.new(ctrl.l+ctrl.r,(ctrl.f+ctrl.b)*0.2,0).Position) - camCF.Position)) * spd
+                        lastCtrl = {f=ctrl.f,b=ctrl.b,l=ctrl.l,r=ctrl.r}
+                    elseif spd ~= 0 then
+                        bvInst.Velocity = ((camCF.LookVector*(lastCtrl.f+lastCtrl.b))
+                            + ((camCF*CFrame.new(lastCtrl.l+lastCtrl.r,(lastCtrl.f+lastCtrl.b)*0.2,0).Position) - camCF.Position)) * spd
+                    else
+                        bvInst.Velocity = Vector3.zero
+                    end
+
+                    bgInst.CFrame = camCF * CFrame.Angles(-math.rad((ctrl.f+ctrl.b)*50*spd/maxSpd),0,0)
+                end
+                cleanup(hub.LocalPlayer.Character)
             end)
         end
 
         function deactFly()
+            flyActive = false
             hub.Flags.FlyEnabled = false
-            if flyConn   then flyConn:Disconnect();   flyConn   = nil end
-            if flyUpConn then flyUpConn:Disconnect(); flyUpConn = nil end
-            local char = hub.LocalPlayer.Character
-            if char then
-                local root = char:FindFirstChild("HumanoidRootPart")
-                if root then
-                    local bv = root:FindFirstChild("_FlyBV")
-                    if bv then bv:Destroy() end
-                end
-                local hum = char:FindFirstChild("Humanoid")
-                if hum then
-                    for _, st in pairs({
-                        Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Freefall,
-                        Enum.HumanoidStateType.GettingUp,   Enum.HumanoidStateType.Jumping,
-                        Enum.HumanoidStateType.Landed,      Enum.HumanoidStateType.Physics,
-                        Enum.HumanoidStateType.Running,     Enum.HumanoidStateType.RunningNoPhysics,
-                    }) do
-                        pcall(function() hum:SetStateEnabled(st, true) end)
-                    end
-                end
-            end
+            cleanup(hub.LocalPlayer.Character)
         end
     end
 
@@ -242,6 +277,19 @@ local hub=_G.JHub; local Win=hub.Win; local CoreGui=hub.CoreGui
         task.wait(0.5)
         local h = c:FindFirstChild("Humanoid")
         if h then hub.OriginalWalkSpeed = h.WalkSpeed end
+        -- Re-apply active features after respawn
+        task.wait(0.3)
+        local feats = hub._enabledFeatures or {}
+        if table.find(feats, "WalkSpeed") then
+            if h then h.WalkSpeed = hub.WalkSpeed end
+        end
+        if table.find(feats, "JumpPower") then
+            if h then h.UseJumpPower = true; h.JumpPower = hub.JumpPower end
+        end
+        if table.find(feats, "Fly") and hub._flyToggled then
+            task.wait(0.5)
+            actFly()
+        end
     end)
     if hub.LocalPlayer.Character and hub.LocalPlayer.Character:FindFirstChild("Humanoid") then
         hub.OriginalWalkSpeed = hub.LocalPlayer.Character.Humanoid.WalkSpeed
