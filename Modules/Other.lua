@@ -1,24 +1,21 @@
 local hub=_G.JHub; local Win=hub.Win
     local OtherSideTab = Win:Tab({ Title = "Other", Icon = "zap" })
 
-    local FunMulti = OtherSideTab:MultiSection({
+    local ExtrasMulti = OtherSideTab:MultiSection({
         Title     = "Extras",
-        Desc      = "Fun  •  More coming soon",
+        Desc      = "Bot  •  Fun",
         Icon      = "sparkles",
         Box       = true,
         BoxBorder = true,
         Opened    = true,
     })
 
-    local FunTab = FunMulti:Tab({ Title = "Fun", Desc = "Fun utilities", Icon = "smile", Selected = true })
+    local BotTab = ExtrasMulti:Tab({ Title = "Bot", Desc = "Bot utilities", Icon = "cpu", Selected = true })
+    local FunTab = ExtrasMulti:Tab({ Title = "Fun", Desc = "Fun utilities", Icon = "smile" })
 
-    -- ── Bot Utils ──────────────────────────────────────────────────
+    -- ── Bot Tab ────────────────────────────────────────────────────
 
-    FunTab:Space({})
-
-    FunTab:Section({ Title = "Bot", Desc = "Bot utilities", Icon = "cpu" })
-
-    FunTab:Space({})
+    BotTab:Space({})
 
     local deleteBotEnabled = false
     local deleteBotConn    = nil
@@ -35,7 +32,7 @@ local hub=_G.JHub; local Win=hub.Win
         task.delay(5, function() pcall(function() bv:Destroy() end) end)
     end
 
-    FunTab:Toggle({
+    BotTab:Toggle({
         Title    = "Delete Bot",
         Desc     = "Deleting Bot — drops through floor, watches respawns",
         Value    = false,
@@ -67,9 +64,9 @@ local hub=_G.JHub; local Win=hub.Win
         end,
     })
 
-    FunTab:Space({})
+    BotTab:Space({})
 
-    -- ── Target Shooter ────────────────────────────────────────────────
+    -- ── Fun Tab ────────────────────────────────────────────────────
 
     FunTab:Space({})
 
