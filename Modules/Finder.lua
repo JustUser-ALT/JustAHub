@@ -29,11 +29,20 @@ ItemTab:Toggle({
     Flag     = "ItemFinderGUI",
     Callback = function(v)
         if not ifLoaded then
-            pcall(function() loadstring(game:HttpGet(ITEM_FINDER_URL))() end)
+            local ok, err = pcall(function() loadstring(game:HttpGet(ITEM_FINDER_URL))() end)
+            if not ok then
+                hub:Notify("Finder", "Failed to load ItemFinder", "x", 4)
+                return
+            end
             ifLoaded = true
-            task.wait(0.3)
+            task.wait(0.5)
         end
-        if _G.ItemFinderShow then _G.ItemFinderShow(v) end
+        -- _G.ItemFinderShow is set by ItemFinder.lua at the end
+        if _G.ItemFinderShow then
+            _G.ItemFinderShow(v)
+        else
+            hub:Notify("Finder", "ItemFinder not ready yet", "info", 3)
+        end
     end,
 })
 
